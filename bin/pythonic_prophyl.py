@@ -40,9 +40,7 @@ import contextlib
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Optional
-
-
-LOCALDIR = ".local"
+import subprocess
 
 def init_logging():
 	logging.basicConfig(format='%(asctime)s. %(levelname)s:%(message)s', filename=os.path.join(f"{Path(__file__).stem}_{time.strftime('%Y%m%d%H%M%S')}.log"), level=logging.INFO) #Ez ele nem kerulhet logging (msg/sysexec) parancs!!!
@@ -61,15 +59,6 @@ def msg(cmd, tipus="info"):
 def error(uzenet):
 	msg(uzenet, tipus="error")
 	
-@contextmanager
-def pushd(new_dir):
-	old_dir = os.getcwd()
-	os.chdir(new_dir)
-	try:
-		yield
-	finally:
-		os.chdir(old_dir)
-
 
 @dataclass
 class STInfo:
@@ -77,6 +66,11 @@ class STInfo:
 	assembly_dir: Path
 	workdir: Path
 	assembly_df: pd.DataFrame = field(init=False)
+	
+	def __post_init__(self):
+		self.assembly_df = pd.read_csv(self.assemblies_file, sep="\t")
+		ensure_dir(self.workdir)
+		ensure_dir(self.dated_trees_dir)
 	
 	@cached_property
 	def assemblies_file(self) -> Path:
@@ -100,7 +94,7 @@ class STInfo:
 	
 	@cached_property
 	def snippy_dedup(self) -> Path:
-		return self.snippy_out.with_suffix(".nodup.fna")
+		return self.workdir / f"ST{self.st}.snippy_out.nodup.fna"
 	
 	@cached_property
 	def reference_strain_file(self) -> Path:
@@ -111,25 +105,61 @@ class STInfo:
 		return f"ST{self.st}.gubbins"
 	
 	@cached_property
-	def gubbins_tree(self):
+	def gubbins_tree(self) -> Path:
 		return self.gubbins_dir / f"{self.gubbins_prefix}.final_tree.tre"
 	
 	@cached_property
-	def gubbins_fasta(self):
+	def gubbins_fasta(self) -> Path:
 		return self.gubbins_dir / f"{self.gubbins_prefix}.filtered_polymorphic_sites.fasta"
 	
 	@cached_property
-	def tree_shrink(self):
-		return self.workdir / f"ST{self.st}.treeshrink.nwk"
+	def treeshrink(self) -> Path:
+		return self.workdir / f"{self.treeshrink_prefix}.tre"
+	
+	@cached_property
+	def treeshrink_prefix(self):
+		return f"ST{self.st}.treeshrink"
+	
+	@cached_property
+	def rooted_shrink(self):
+		return self.workdir / f"{self.treeshrink_prefix}.treeshrink.rooted.nwk"
 	
 	@cached_property
 	def tree_prune(self):
 		return self.workdir / f"ST{self.st}.treepruner.nwk"
-	
-	
-	def __post_init__(self):
-		self.assembly_df = pd.read_csv(self.assemblies_file, sep="\t")
-		ensure_dir(self.workdir)
+		
+	@cached_property
+	def pruned_tree(self) -> Path:
+		return self.workdir / f"ST{self.st}.pruned.tre"
+
+	@cached_property
+	def dropped_tips(self) -> Path:
+		return self.workdir / f"ST{self.st}.pruning.dropped_tips.tsv"
+
+	@cached_property
+	def rooted_prefix(self) -> Path:
+		return self.workdir / f"ST{self.st}.rooted"
+
+	@cached_property
+	def rooted_trees(self) -> Path:
+		return Path(f"{self.rooted_prefix}.trees.rds")
+
+	@cached_property
+	def dated_trees_rds(self) -> Path:
+		return self.workdir / f"ST{self.st}.dated_trees.rds"
+
+	@cached_property
+	def dated_trees_dir(self) -> Path:
+		return self.workdir / f"ST{self.st}.dated_trees"
+
+	@cached_property
+	def final_dated_tree_rds(self) -> Path:
+		return self.workdir / f"ST{self.st}.final_dated_tree.rds"
+
+	@cached_property
+	def final_dated_tree_nwk(self) -> Path:
+		return self.workdir / f"ST{self.st}.final_dated_tree.nwk"
+
 
 
 # ============================================================
@@ -191,18 +221,15 @@ def get_args():
 	parser.add_argument("--typing_table", default="data/1_samples_typing_results_filtered_inlab_samples_readded.20260105.csv", help="Table containing all possible assembly typings")
 	parser.add_argument("--assembly_dir", default="tree_input", help="Directory storing assembly tables")
 	parser.add_argument("--all_assemblies", default="data/all_assemblies.tsv", help="Table containing all assembly paths")
-	#parser.add_argument("--assemblies", default="tree_input/ST117.tsv", help="TSV file listing assemblies")
 	parser.add_argument("-wd","--workdir",default="work")
-	parser.add_argument("--projectID", default="project", help="Project ID")
 	parser.add_argument("-n","--cpu", type=int, default=20, help="Number of threads")
 	parser.add_argument("--subthreads", type=int, default=4, help="Number of subthreads in a thread")
 	parser.add_argument("--force", action="store_true", help="Overwrite existing files")
-	parser.add_argument("--root_method", default="midpoint", help="Tree rooting method")
-	parser.add_argument("--root_topn", type=int, default=5, help="Top N candidates for rooting")
-	parser.add_argument("--clock", default="strict", help="Molecular clock model")
 	
 	args = parser.parse_args()
 	args.script_dir = Path(__file__).resolve().parent
+	args.localdir = ".local"
+	return args
 
 # ============================================================
 # Step 1: Read Assemblies
@@ -435,7 +462,6 @@ def choose_reference_genome(info, args):
 	# gunzip if necessary when copying reference genome
 	msg(f"ST{info.st}: Copying reference genome to {info.refgenome}")
 	open_func = gzip.open if chosen_path.suffix == ".gz" else open
-	mode_in = "rb" if chosen_path.suffix == ".gz" else "rb"
 	
 	with open_func(chosen_path, "rb") as f_in, open(info.refgenome, "wb") as f_out:
 		shutil.copyfileobj(f_in, f_out)
@@ -541,7 +567,6 @@ def concat_snippy(info):
 		msg(f"Failed to write concatenated file: {e}", "error")
 		return
 	msg(f"Concatenated longest contigs → {info.snippy_out} ({len(snippy_files)} assemblies)")
-	return 
 	# Only remove individual files after successful concatenation
 	for _, f in snippy_files:
 		try:
@@ -618,81 +643,13 @@ def run_gubbins(info, args):
 # Step 8–11: Tree operations (R-based)
 # ============================================================
 
-def run_R(script, args_line, label, container="r_container"):
-	print(f"[INFO] Running R step: {label}")
-	run_container(container, f"Rscript {script} {args_line}")
 
-
-def root_tree(info, args, task):
-	attr = f'tree_{task}'
-	tree = getattr(info, attr, None)
-	if tree is None:
-		return False
-	if task == "shrink"
-		tree = info.tree_shrink
-	elif task == "prune":
-		tree = info.tree_prune
-	else:
-		return False
-	
-	outfile = tree.with_suffix(f".rooted_{label}.nwk")
-	if skip_if_done(outfile, args.force):
-		return True
-	cmd = (f"--project_dir {info.workdir} --tree {tree} --assemblies {info.assemblies_file} --root_method {args.root_method} --root_topn {args.root_topn} --threads {args.subthreads} --output {outfile}")
-	run_R(f"{project_dir}/bin/root_tree.R", cmd, f"root_{label}")
-	return True
-
-
-def date_tree(project_dir: Path, rooted_tree: Path, snps: Path, assemblies: Path, threads: int, params, label: str, force=False):
-	outfile = rooted_tree.with_suffix(f".dated_{label}.rds")
-	if skip_if_done(outfile, force):
-		return outfile
-	cmd = (
-		f"--project_dir {project_dir} --trees {rooted_tree} --snps {snps} "
-		f"--assemblies {assemblies} --threads {threads} "
-		f"--branch_dimension snp_per_genome --clock {params['clock']} --reroot false"
-	)
-	run_R(f"{project_dir}/bin/date_tree.R", cmd, f"date_{label}", project_dir)
-	return outfile
-
-
-def choose_tree(project_dir: Path, dated_shrink: Path, dated_prune: Path, force=False):
-	outfile = project_dir / "best_tree_selected.rds"
-	if skip_if_done(outfile, force):
-		return outfile
-	cmd = f"--trees_shrink {dated_shrink} --trees_prune {dated_prune}"
-	run_R(f"{project_dir}/bin/choose_dated_tree.R", cmd, "choose_best", project_dir)
-	return outfile
-
-
-def add_duplicates(project_dir: Path, launch_dir: Path, tree: Path, duplicates: Path, force=False):
-	outfile = project_dir / "final_tree_with_duplicates.nwk"
-	if skip_if_done(outfile, force):
-		return outfile
-	cmd = (f"--project_dir {project_dir} --launch_dir {launch_dir} --tree {tree} --duplicates {duplicates}")
-	run_R(f"{project_dir}/bin/add_duplicates.R", cmd, "add_dups", project_dir)
-	return outfile
 
 
 # ============================================================
 # Main
 # ============================================================
 
-
-def run_downstream_pipeline(info, args):
-snippy_out: Path, projectID: str, threads: int, workdir: Path, assemblies_file: Path, args):
-	rooted_shrink = root_tree(info, args, task="shrink")
-	rooted_prune = root_tree(info, args, task="prune")
-	
-	dated_shrink = date_tree(info, args)
-		info.workdir, rooted_shrink, snps, assemblies_file, threads, params, "shrink")
-	dated_prune = date_tree(info, args)
-		workdir, rooted_prune, snps, assemblies_file, threads, params, "prune")
-
-	best_tree = choose_tree(workdir, dated_shrink, dated_prune)
-	final_tree = add_duplicates(workdir, Path.cwd(), best_tree, workdir / "duplicates.txt")
-
-	return final_tree
 
 def run_parallel(st_info_list, func, max_workers=4, **kwargs):
 	"""
@@ -704,11 +661,7 @@ def run_parallel(st_info_list, func, max_workers=4, **kwargs):
 		futures = {executor.submit(func, info, **kwargs): info.st for info in st_info_list}
 		for future in as_completed(futures):
 			st = futures[future]
-			try:
-				results.append(future.result())
-				#print(f"[OK] Stage completed for ST{st}")
-			except Exception as e:
-				msg(f"Stage failed for ST{st}: {e}", tipus="error")
+			results.append(future.result())
 	return results
 
 
@@ -740,35 +693,115 @@ def finalize_snippy_st(info, args):
 
 	remove_duplicates(info, args)
 
+def run_R(script, args_line, args, container="r_container"):
+	print(f"[INFO] Running R step: {script}")
+	run_container(container, f"Rscript {args.script_dir / script} {args_line}")
 
-def run_snippy(info, args):
-	ensure_dir(info.snippy_dir())
 
-	if not skip_if_done(info.snippy_out(), args.force):
-		run_snippy_all(info.assembly_df, info.snippy_dir(), info.refgenome, args.cpu, info.st)
-		concat_snippy(info.assembly_df, info.snippy_dir(), info.snippy_out(), info.st)
-	
-	info.snippy_dedup = info.snippy_dedup_path()
-	remove_duplicates(info.snippy_out(), info.snippy_dedup, info.st, args.subthreads, args.force)
+
+def prune_tree(info, args):
+	if not info.pruned_tree.exists() or info.pruned_tree.stat().st_size == 0:
+		cmd=f"--project_dir {args.script_dir} --tree {info.gubbins_tree} --gentypes {info.assemblies_file} --step_threshold 0.01 --overall_threshold 0.01 --threads {args.subthreads} --outtree {info.pruned_tree} --dropped_tips {info.dropped_tips}"
+		run_R("prune_root.R", cmd, args=args)
+	else:
+		print(f"[{info.st}] Skipping prune_root.R: {info.pruned_tree} exists")
+
+
+def shrink_tree(info, args):
+	# ---- TreeShrink ----
+	if not info.treeshrink.exists() or info.treeshrink.stat().st_size == 0:
+		cmd = (
+			f"run_treeshrink.py "
+			f"--tree {info.pruned_tree} "
+			f"--centroid "
+			f"--quantiles 0.1 "
+			f"--outprefix {info.treeshrink_prefix} "
+			f"--outdir {info.workdir}"
+		)
+		run_container(treeshrink_container, cmd)
+	else:
+		print(f"[{info.st}] Skipping TreeShrink: {info.treeshrink} exists")
+
+def validate_pruning(info, args):
+	run_R("validate_pruning.R", f"--tree {info.gubbins_tree} --pruned_tree {info.treeshrink}", args=args)
+
+
+def root_tree(info, args):
+	run_R(
+		"root_tree.R",
+		f"--project_dir {args.script_dir} "
+		f"--tree {info.treeshrink} "
+		f"--assemblies {info.assemblies_file} "
+		f"--outprefix {info.rooted_prefix} "
+		f"--root_method all "
+		f"--root_topn 1 "
+		f"--threads {args.subthreads}",
+		args=args,
+	)
+
+def date_tree(info, args):
+	run_R(
+		"date_tree.R",
+		f"--project_dir {args.script_dir} "
+		f"--trees {info.rooted_trees} "
+		f"--snps {info.gubbins_fasta} "
+		f"--assemblies {info.assemblies_file} "
+		f"--threads {args.subthreads} "
+		f"--branch_dimension snp_per_genome "
+		f"--clock strict "
+		f"--reroot false "
+		f"--dated_trees {info.dated_trees_rds} "
+		f"--dated_trees_dir {info.dated_trees_dir}",
+		label="date_tree",
+		args=args,
+	)
+
+def choose_dated_tree(info, args):
+	run_R(
+		"choose_dated_tree.R",
+		f"--trees {info.dated_trees_rds} "
+		f"--out_tree_rds {info.final_dated_tree_rds} "
+		f"--out_tree_nwk {info.final_dated_tree_nwk}",
+		label="choose_dated_tree",
+		args=args,
+	)
+
+
+def draw_tree(info, args):
+	run_R(
+		"tree_drawing.R",
+		f"--tree {info.workdir / f'ST{info.st}.final_dated_tree.nwk'} "
+		f"--meta {info.assemblies_file} "
+		f"--columns spatyper,Capsule.type,country "
+		f"--out {info.workdir / f'ST{info.st}.tree.pdf'}",
+		label="draw_tree",
+		args=args,
+	)
+
+
+def date_and_root(info, args):
+	# ---- prune_root.R ----
+	prune_tree(info, args)
+	shrink_tree(info, args)
+	validate_pruning(info, args)
+	root_tree(info, args)
+	date_tree(info, args)
+	choose_dated_tree(info, args)
+	draw_tree(info, args)
 
 
 def main():
 	init_logging()
 	args = get_args()
-	# Step 1-3: Setup & prepare assemblies
-	#workdir = setup_workdir(args.projectID)
-	ensure_dir(LOCALDIR)
+	# Setup & prepare assemblies
+	ensure_dir(args.localdir)
 	ensure_dir(args.workdir)
 	
 	#Get ST list
 	st_list = read_st_file(args.st_file)
-	
 	create_assembly_tables(st_list, args)
 	
 	st_info_list = [STInfo(st = st, assembly_dir = Path(args.assembly_dir), workdir = Path(args.workdir) / f"ST{st}") for st in st_list]
-		
-		
-
 	
 	#Reference genome
 	msg("====Reference selection====")
@@ -777,24 +810,19 @@ def main():
 	#Snippy
 	msg("====Snippy====")
 	run_snippy_all_parallel(st_info_list, args)
-	run_parallel(st_info_list, finalize_snippy_st, max_workers=args.subthreads, args=args)
+	run_parallel(st_info_list, finalize_snippy_st, max_workers=args.cpu, args=args)
 
 	
 	#Gubbins
 	msg("====Gubbins====")
-	run_parallel(st_info_list, run_gubbins, max_workers=args.subthreads, args=args)
+	run_parallel(st_info_list, run_gubbins,  args=args)
 	
-	return
-	
-	#root
-	#date
-	#shrink
-	
-	# Step 6-11: Downstream analysis
-	final_tree = run_downstream_pipeline(snippy_out, args.projectID, args.threads, workdir, Path(args.assemblies), args)
+	msg("====Dating and rooting trees====")
+	run_parallel(st_info_list, date_and_root, max_workers=args.cpu, args=args)
 
-	print(f"[DONE] Pipeline complete → {final_tree}")
 
 
 if __name__ == "__main__":
 	main()
+
+

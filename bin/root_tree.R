@@ -41,12 +41,6 @@ args_list <- list(
     default = "rtt_rms"
   ),
   make_option(
-    "--output_prefix",
-    type = "character",
-    help = "Prefix for output files (e.g., 'sample1_').",
-    default = ""
-  ),
-  make_option(
     "--root_topn",
     type = "integer",
     help = "Number of top trees to return for the selected root method. Only
@@ -58,6 +52,12 @@ args_list <- list(
     type = "integer",
     help = "Number of threads to use.",
     default = 10
+  ),
+  make_option(
+    "--outprefix",
+    type="character",
+    help="Prefix of output files",
+    default="output"
   )
 )
 
@@ -66,6 +66,21 @@ args_parser  <- OptionParser(option_list = args_list)
 args  <- parse_args(args_parser)
 
 load_all(args$project_dir)
+
+args$rooted_trees_rds = paste0(args$outprefix, ".trees.rds")
+args$rtt_metrics_rds=paste0(args$outprefix,".rtt_metrics.rds")
+args$rtt_plots_pdf=paste0(args$outprefix,".rtt_plots.pdf")
+
+date_mid <- function(x) {
+	x <- as.character(x)
+	as.Date(dplyr::case_when(
+		grepl("^\\d{4}-\\d{2}-\\d{2}$", x) ~ x,
+		grepl("^\\d{4}-\\d{2}$", x)        ~ paste0(x, "-15"),
+		grepl("^\\d{4}$", x)               ~ paste0(x, "-07-01"),
+		TRUE                               ~ NA_character_
+	))
+}
+
 
 # create log file and start logging
 if (!interactive()) {
@@ -127,13 +142,9 @@ if (args$root_method %in% c(
   assemblies <- read.csv(args$assemblies, sep = "\t")
   
   # collect tip dates in the same order as tree$tip.label
-  tip_dates <- unname(sapply(tree$tip.label, function(x) {
-    index <- which(assemblies$assembly == x)
-    date_middle(assemblies$collection_date[index])
-  }))
-  
-  # convert tip dates to numeric for root_tree()
-  tip_dates <- as.numeric(as.Date(tip_dates, origin = "1970-01-01"))
+  tip_dates_raw <- as.numeric(date_mid(assemblies$Date))
+  names(tip_dates_raw) <- assemblies$strain
+  tip_dates <- tip_dates_raw[tree$tip.label]
   
   # TODO: look for better objectives
   objective_rlm_slope <- function(x,y) MASS::rlm(y ~ x)$coef[2]
@@ -164,7 +175,8 @@ if (args$root_method %in% c(
   
   # return the top_n trees for each objective
   top_n <- args$root_topn
-  
+  cat(top_n)
+  cat("\n")
   for (i in seq_along(objective)) {
     rtree <- root_rtt(
       t = tree,
@@ -222,14 +234,13 @@ g <- ggplot(df, aes(date, snp)) +
   facet_grid(name~.) + 
   geom_smooth(method = "lm")
 
-
 # export rooted tree object
-saveRDS(rooted_trees, file = paste0(args$output_prefix, "rooted_trees.rds"))
+saveRDS(rooted_trees, file = args$rooted_trees_rds)
 # export root to tip metrics
-saveRDS(results, file = paste0(args$output_prefix, "rtt_metrics.rds"))
+saveRDS(results, file = args$rtt_metrics_rds)
 # export root to tip regression plots
 ggsave(
-  filename = paste0(args$output_prefix, "rtt_plots.pdf"),
+  filename = args$rtt_plots_pdf,
   plot = g,
   width = 10,
   height = 5 * length(rooted_trees),

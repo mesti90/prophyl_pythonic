@@ -66,6 +66,18 @@ args_list <- list(
     type = "logical",
     help = "Whether to reroot the tree using treedater's standard rerooting functionality.",
     default = FALSE
+  ),
+  make_option(
+    "--dated_trees",
+    type = "character",
+    help="R binary file containing the dated trees",
+    default="dated_trees.rds"
+  ),
+  make_option(
+    "--dated_trees_dir",
+    type = "character",
+    help="Path to contain some intermediate files",
+    default="dated_trees"
   )
 )
 
@@ -117,7 +129,7 @@ if (branch_dimension == "snp_per_genome") {
 assemblies <- read.csv(args$assemblies, sep = "\t", header = TRUE)
 
 # drop tips which cannot be found in assembly table and give a warning
-index <- which(trees[[1]]$tip.label %in% assemblies$assembly == FALSE)
+index <- which(trees[[1]]$tip.label %in% assemblies$strain == FALSE)
 if (length(index) > 0) {
   tips_to_drop <- trees[[1]]$tip.label[index]
   tips_to_drop_collapsed <- paste(tips_to_drop, collapse = ", ")
@@ -134,21 +146,22 @@ if (length(index) > 0) {
 }
 
 # filter to assemblies that are included in the tree
-index <- which(assemblies$assembly %in% trees[[1]]$tip.label == FALSE)
+index <- which(assemblies$strain %in% trees[[1]]$tip.label == FALSE)
 if (length(index) > 0) {
   assemblies <- assemblies[-index, ]
 }
 
 # filter to relevant columns
 assemblies <- assemblies[, which(names(assemblies) %in% c(
-  "assembly", "collection_date"
+  "strain", "Date"
 ))]
 
 # add new temporal variables
-assemblies$date <- date_middle(assemblies$collection_date)
-assemblies$lower <- date_lower(assemblies$collection_date)
-assemblies$upper <- date_upper(assemblies$collection_date)
 
+assemblies$Date <- date_mid(assemblies$Date)
+
+assemblies$lower <- date_lower(assemblies$Date)
+assemblies$upper <- date_upper(assemblies$Date)
 # define range for dates which are not known exactly
 # note, the which function automatically removes NA values
 # so this step will only include dates which are known to some extent
@@ -156,14 +169,16 @@ assemblies$upper <- date_upper(assemblies$collection_date)
 index_uncertain <- which(assemblies$upper > assemblies$lower)
 if (length(index_uncertain) > 0) {
   uncertain_dates <- assemblies[index_uncertain, c("lower", "upper")]
-  rownames(uncertain_dates) <- assemblies$assembly[index_uncertain]
+  rownames(uncertain_dates) <- assemblies$strain[index_uncertain]
 } else {
   uncertain_dates <- NULL
 }
 
+
+
 # drop tips with unknown sampling dates
-index <- which(is.na(assemblies$date))
-tips_to_drop <- assemblies$assembly[index]
+index <- which(is.na(assemblies$Date))
+tips_to_drop <- assemblies$strain[index]
 if (length(index) > 0) {
   # drop from tree
   trees <- lapply(trees, function(tree) {
@@ -171,7 +186,7 @@ if (length(index) > 0) {
     return(tree)
   })
   # drop from assemblies
-  assemblies <- assemblies[-which(assemblies$assembly %in% tips_to_drop), ]
+  assemblies <- assemblies[-which(assemblies$strain %in% tips_to_drop), ]
   # print warning message
   tips_to_drop_collapsed <- paste(tips_to_drop, collapse = ", ")
   msg <- paste0(
@@ -182,27 +197,41 @@ if (length(index) > 0) {
   warning(msg)
 }
 
+
+
 # rename tips to include dates
 for (i in 1:length(trees)) {
   tree <- trees[[i]]
   tree$tip.label <- sapply(tree$tip.label, function(x) {
-  index <- which(assemblies$assembly == x)
-  paste(x, assemblies$date[index], sep = "|")
+  index <- which(assemblies$strain == x)
+  paste(x, assemblies$Date[index], sep = "|")
   }, USE.NAMES = FALSE)
   trees[[i]] <- tree
 }
 
+
+
 if (!is.null(uncertain_dates)) {
   # rename rownames in uncertain dates to include dates
   row.names(uncertain_dates) <- sapply(row.names(uncertain_dates), function(x) {
-    index <- which(assemblies$assembly == x)
+    index <- which(assemblies$strain == x)
     # this will include the middle value of the range
-    paste(x, assemblies$date[index], sep = "|")
+    paste(x, assemblies$Date[index], sep = "|")
   }, USE.NAMES = FALSE)
 }
 
 # extract dates from tip labels in appropriate format
-sts <- sampleYearsFromLabels(trees[[1]]$tip.label, delimiter = "|")
+
+sampleYearsFromLabels_simple <- function(labels) {
+  # Extract the year from the label
+  yrs <- as.numeric(sub(".*\\|(\\d{4}).*", "\\1", labels))
+  
+  # Name the vector using tip labels
+  names(yrs) <- labels
+  yrs
+}
+
+sts <- sampleYearsFromLabels_simple(trees[[1]]$tip.label)
 
 # if the reroot argument is set to TRUE, and the tree is rooted, unroot the tree
 if (as.logical(args$reroot)) {
@@ -251,13 +280,13 @@ for (i in 1:length(dtr)) {
   class(dtr[[i]]) <- dtr_class
 }
 
-# export RTT plots
-if (!dir.exists("rtt_plots")) dir.create("rtt_plots")
+# export dated trees and plots
+if (!dir.exists(args$dated_trees_dir)) dir.create(args$dated_trees_dir)
 
 for (i in 1:length(dtr)) {
   try(dev.off(), silent = TRUE)
   try(dev.off(), silent = TRUE)
-  pdf(file = paste0("rtt_plots/",names(dtr)[i],".pdf"))
+  pdf(file = paste0(args$dated_trees_dir, "/",names(dtr)[i],".pdf"))
   rootToTipRegressionPlot(dtr[[i]])
   dev.off()
 }
@@ -268,15 +297,14 @@ for (i in 1:length(dtr)) {
   }))
 }
 
-# export dated trees
-if (!dir.exists("dated_trees")) dir.create("dated_trees")
+
 
 for (i in 1:length(dtr)) {
-  write.tree(dtr[[i]], file = paste0("dated_trees/",names(dtr)[i],".tre"))
+  write.tree(dtr[[i]], file = paste0(args$dated_trees_dir,"/",names(dtr)[i],".tre"))
 }
 
 # export dated_trees object as rds
-saveRDS(dtr, file = "dated_trees.rds")
+saveRDS(dtr, file = args$dated_trees)
 
 # end logging
 if (!interactive()) {
