@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 #TODO: known issue: gubbins puts it output in the current directory
-#Continue after gubbins finishes
 
 """
 treebuilder_pipeline.py
@@ -159,8 +158,10 @@ class STInfo:
 	@cached_property
 	def final_dated_tree_nwk(self) -> Path:
 		return self.workdir / f"ST{self.st}.final_dated_tree.nwk"
-
-
+	
+	@cached_property
+	def tree_figure(self) -> Path:
+		return self.workdir / f'ST{self.st}.tree.pdf'
 
 # ============================================================
 # Utilities
@@ -226,7 +227,16 @@ def get_args():
 	parser.add_argument("--subthreads", type=int, default=4, help="Number of subthreads in a thread")
 	parser.add_argument("--force", action="store_true", help="Overwrite existing files")
 	
+	parser.add_argument("--snippy", action="store_true", help="Run snippy")
+	parser.add_argument("--gubbins", action="store_true", help="Run gubbins")
+	parser.add_argument("--date_root", action="store_true", help="Run dating and rooting")
+	parser.add_argument("--all", action="store_true", help="Run all parts")
+	
 	args = parser.parse_args()
+	if args.all:
+		args.snippy = True
+		args.gubbins = True
+		args.date_root = True
 	args.script_dir = Path(__file__).resolve().parent
 	args.localdir = ".local"
 	return args
@@ -384,7 +394,7 @@ def create_assembly_tables(st_list, args):
 	"""
 	Main workflow to generate per-ST assembly tables.
 	"""
-	marker_file = Path(LOCALDIR) / "assembly_tables_ready"
+	marker_file = Path(args.localdir) / "assembly_tables_ready"
 	if marker_file.exists() and not args.force:
 		msg(f"Assembly tables already ready ({marker_file}). Skipping generation.")
 		return
@@ -727,6 +737,9 @@ def validate_pruning(info, args):
 
 
 def root_tree(info, args):
+	if info.rooted_trees.exists():
+		msg(f"[{info.st}] Skip rooting tree, as {info.rooted_trees} exists")
+		return
 	run_R(
 		"root_tree.R",
 		f"--project_dir {args.script_dir} "
@@ -740,6 +753,9 @@ def root_tree(info, args):
 	)
 
 def date_tree(info, args):
+	if info.dated_trees_rds.exists():
+		msg(f"[{info.st}] Skip dating tree, as {info.dated_trees_rds} exists")
+		return
 	run_R(
 		"date_tree.R",
 		f"--project_dir {args.script_dir} "
@@ -752,29 +768,32 @@ def date_tree(info, args):
 		f"--reroot false "
 		f"--dated_trees {info.dated_trees_rds} "
 		f"--dated_trees_dir {info.dated_trees_dir}",
-		label="date_tree",
 		args=args,
 	)
 
 def choose_dated_tree(info, args):
+	if info.final_dated_tree_rds.exists() and info.final_dated_tree_nwk.exists():
+		msg(f"[{info.st}] Skip dating tree, as {info.final_dated_tree_rds} and {info.final_dated_tree_nwk} exist")
+		return
 	run_R(
 		"choose_dated_tree.R",
 		f"--trees {info.dated_trees_rds} "
 		f"--out_tree_rds {info.final_dated_tree_rds} "
 		f"--out_tree_nwk {info.final_dated_tree_nwk}",
-		label="choose_dated_tree",
 		args=args,
 	)
 
 
 def draw_tree(info, args):
+	if info.tree_figure.exists():
+		msg(f"[{info.st}] Skip drawing tree, as {info.tree_figure} exists")
+		return
 	run_R(
 		"tree_drawing.R",
-		f"--tree {info.workdir / f'ST{info.st}.final_dated_tree.nwk'} "
+		f"--tree {info.final_dated_tree_nwk} "
 		f"--meta {info.assemblies_file} "
 		f"--columns spatyper,Capsule.type,country "
-		f"--out {info.workdir / f'ST{info.st}.tree.pdf'}",
-		label="draw_tree",
+		f"--out {info.tree_figure}",
 		args=args,
 	)
 
@@ -803,22 +822,22 @@ def main():
 	
 	st_info_list = [STInfo(st = st, assembly_dir = Path(args.assembly_dir), workdir = Path(args.workdir) / f"ST{st}") for st in st_list]
 	
-	#Reference genome
-	msg("====Reference selection====")
-	run_parallel(st_info_list, choose_reference_genome, max_workers=args.cpu, args=args)
-	
 	#Snippy
-	msg("====Snippy====")
-	run_snippy_all_parallel(st_info_list, args)
-	run_parallel(st_info_list, finalize_snippy_st, max_workers=args.cpu, args=args)
-
+	if args.snippy:
+		msg("====Snippy====")
+		run_parallel(st_info_list, choose_reference_genome, max_workers=args.cpu, args=args)
+		run_snippy_all_parallel(st_info_list, args)
+		run_parallel(st_info_list, finalize_snippy_st, max_workers=args.cpu, args=args)
 	
 	#Gubbins
-	msg("====Gubbins====")
-	run_parallel(st_info_list, run_gubbins,  args=args)
+	if args.gubbins:
+		msg("====Gubbins====")
+		run_parallel(st_info_list, run_gubbins,  args=args)
 	
-	msg("====Dating and rooting trees====")
-	run_parallel(st_info_list, date_and_root, max_workers=args.cpu, args=args)
+	#Post-process
+	if args.date_root:
+		msg("====Dating and rooting trees====")
+		run_parallel(st_info_list, date_and_root, max_workers=args.cpu, args=args)
 
 
 
