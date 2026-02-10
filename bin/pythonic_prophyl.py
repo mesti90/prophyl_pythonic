@@ -68,8 +68,12 @@ class STInfo:
 	
 	def __post_init__(self):
 		self.assembly_df = pd.read_csv(self.assemblies_file, sep="\t")
-		ensure_dir(self.workdir)
+		ensure_dir(self.stdir)
 		ensure_dir(self.dated_trees_dir)
+	
+	@cached_property
+	def stdir(self) -> Path:
+		return self.workdir / f"ST{self.st}"
 	
 	@cached_property
 	def assemblies_file(self) -> Path:
@@ -77,27 +81,27 @@ class STInfo:
 		
 	@cached_property
 	def refgenome(self) -> Path:
-		return self.workdir / f"ST{self.st}.reference.fna"
+		return self.stdir / f"ST{self.st}.reference.fna"
 	
 	@cached_property
 	def snippy_dir(self) -> Path:
-		return self.workdir / "snippy"
+		return self.stdir / "snippy"
 		
 	@cached_property
 	def gubbins_dir(self) -> Path:
-		return self.workdir / "gubbins"
+		return self.stdir / "gubbins"
 		
 	@cached_property
 	def snippy_out(self) -> Path:
-		return self.workdir / f"ST{self.st}.snippy_out.fna"
+		return self.stdir / f"ST{self.st}.snippy_out.fna"
 	
 	@cached_property
 	def snippy_dedup(self) -> Path:
-		return self.workdir / f"ST{self.st}.snippy_out.nodup.fna"
+		return self.stdir / f"ST{self.st}.snippy_out.nodup.fna"
 	
 	@cached_property
 	def reference_strain_file(self) -> Path:
-		return self.workdir / "reference_strain.txt"
+		return self.stdir / "reference_strain.txt"
 	
 	@cached_property
 	def gubbins_prefix(self) -> str:
@@ -113,7 +117,7 @@ class STInfo:
 	
 	@cached_property
 	def treeshrink(self) -> Path:
-		return self.workdir / f"{self.treeshrink_prefix}.tre"
+		return self.stdir / f"{self.treeshrink_prefix}.tre"
 	
 	@cached_property
 	def treeshrink_prefix(self):
@@ -121,23 +125,23 @@ class STInfo:
 	
 	@cached_property
 	def rooted_shrink(self):
-		return self.workdir / f"{self.treeshrink_prefix}.treeshrink.rooted.nwk"
+		return self.stdir / f"{self.treeshrink_prefix}.treeshrink.rooted.nwk"
 	
 	@cached_property
 	def tree_prune(self):
-		return self.workdir / f"ST{self.st}.treepruner.nwk"
+		return self.stdir / f"ST{self.st}.treepruner.nwk"
 		
 	@cached_property
 	def pruned_tree(self) -> Path:
-		return self.workdir / f"ST{self.st}.pruned.tre"
+		return self.stdir / f"ST{self.st}.pruned.tre"
 
 	@cached_property
 	def dropped_tips(self) -> Path:
-		return self.workdir / f"ST{self.st}.pruning.dropped_tips.tsv"
+		return self.stdir / f"ST{self.st}.pruning.dropped_tips.tsv"
 
 	@cached_property
 	def rooted_prefix(self) -> Path:
-		return self.workdir / f"ST{self.st}.rooted"
+		return self.stdir / f"ST{self.st}.rooted"
 
 	@cached_property
 	def rooted_trees(self) -> Path:
@@ -145,15 +149,15 @@ class STInfo:
 
 	@cached_property
 	def dated_trees_rds(self) -> Path:
-		return self.workdir / f"ST{self.st}.dated_trees.rds"
+		return self.stdir / f"ST{self.st}.dated_trees.rds"
 
 	@cached_property
 	def dated_trees_dir(self) -> Path:
-		return self.workdir / f"ST{self.st}.dated_trees"
+		return self.stdir / f"ST{self.st}.dated_trees"
 
 	@cached_property
 	def final_dated_tree_rds(self) -> Path:
-		return self.workdir / f"ST{self.st}.final_dated_tree.rds"
+		return self.stdir / f"ST{self.st}.final_dated_tree.rds"
 
 	@cached_property
 	def final_dated_tree_nwk(self) -> Path:
@@ -219,7 +223,7 @@ def get_args():
 	"""
 	parser = argparse.ArgumentParser(description="Genome treebuilder pipeline")
 	parser.add_argument("--st_file", default="config/st_list.20260105.txt",help="Text file with one ST per line")
-	parser.add_argument("--typing_table", default="data/1_samples_typing_results_filtered_inlab_samples_readded.20260105.csv", help="Table containing all possible assembly typings")
+	parser.add_argument("--typing_table", default="data/sample_types.inlab_samples.phage_sensitivity.20260128.csv", help="Table containing all assembly typings, and phage sensitivities")
 	parser.add_argument("--assembly_dir", default="tree_input", help="Directory storing assembly tables")
 	parser.add_argument("--all_assemblies", default="data/all_assemblies.tsv", help="Table containing all assembly paths")
 	parser.add_argument("-wd","--workdir",default="work")
@@ -230,6 +234,9 @@ def get_args():
 	parser.add_argument("--snippy", action="store_true", help="Run snippy")
 	parser.add_argument("--gubbins", action="store_true", help="Run gubbins")
 	parser.add_argument("--date_root", action="store_true", help="Run dating and rooting")
+	parser.add_argument("--scriptdir", default="/node10_R10/vasarhelyib/Staphylococcus_aureus/prophyl_pythonic/bin")
+	parser.add_argument("--draw", action="store_true", help="Draw trees")
+	parser.add_argument("--heatmap_vars", default="spatyper,Capsule.type,country,sccmec.type,PH4,PH12,PH18")
 	parser.add_argument("--all", action="store_true", help="Run all parts")
 	
 	args = parser.parse_args()
@@ -237,7 +244,9 @@ def get_args():
 		args.snippy = True
 		args.gubbins = True
 		args.date_root = True
-	args.script_dir = Path(__file__).resolve().parent
+	args.assembly_dir = Path(args.assembly_dir)
+	args.workdir = Path(args.workdir)
+	args.scriptdir = Path(args.scriptdir)
 	args.localdir = ".local"
 	return args
 
@@ -477,7 +486,7 @@ def choose_reference_genome(info, args):
 		shutil.copyfileobj(f_in, f_out)
 
 	msg(f"ST{info.st}: Selected reference genome: {top['strain']} → {info.refgenome}")
-	with open(info.workdir / "reference_strain.txt", "w") as g:
+	with open(info.stdir / "reference_strain.txt", "w") as g:
 		g.write(top['strain'])
 
 
@@ -705,13 +714,13 @@ def finalize_snippy_st(info, args):
 
 def run_R(script, args_line, args, container="r_container"):
 	print(f"[INFO] Running R step: {script}")
-	run_container(container, f"Rscript {args.script_dir / script} {args_line}")
+	subprocess.run(f"singularity run --bind /node8_R10,/node10_R10 {container_names[container]} Rscript {args.scriptdir / script} {args_line}", shell=True)
 
 
 
 def prune_tree(info, args):
 	if not info.pruned_tree.exists() or info.pruned_tree.stat().st_size == 0:
-		cmd=f"--project_dir {args.script_dir} --tree {info.gubbins_tree} --gentypes {info.assemblies_file} --step_threshold 0.01 --overall_threshold 0.01 --threads {args.subthreads} --outtree {info.pruned_tree} --dropped_tips {info.dropped_tips}"
+		cmd=f"--project_dir {args.scriptdir} --tree {info.gubbins_tree} --gentypes {info.assemblies_file} --step_threshold 0.01 --overall_threshold 0.01 --threads {args.subthreads} --outtree {info.pruned_tree} --dropped_tips {info.dropped_tips}"
 		run_R("prune_root.R", cmd, args=args)
 	else:
 		print(f"[{info.st}] Skipping prune_root.R: {info.pruned_tree} exists")
@@ -726,7 +735,7 @@ def shrink_tree(info, args):
 			f"--centroid "
 			f"--quantiles 0.1 "
 			f"--outprefix {info.treeshrink_prefix} "
-			f"--outdir {info.workdir}"
+			f"--outdir {info.stdir}"
 		)
 		run_container(treeshrink_container, cmd)
 	else:
@@ -742,7 +751,7 @@ def root_tree(info, args):
 		return
 	run_R(
 		"root_tree.R",
-		f"--project_dir {args.script_dir} "
+		f"--project_dir {args.scriptdir} "
 		f"--tree {info.treeshrink} "
 		f"--assemblies {info.assemblies_file} "
 		f"--outprefix {info.rooted_prefix} "
@@ -758,7 +767,7 @@ def date_tree(info, args):
 		return
 	run_R(
 		"date_tree.R",
-		f"--project_dir {args.script_dir} "
+		f"--project_dir {args.scriptdir} "
 		f"--trees {info.rooted_trees} "
 		f"--snps {info.gubbins_fasta} "
 		f"--assemblies {info.assemblies_file} "
@@ -792,8 +801,9 @@ def draw_tree(info, args):
 		"tree_drawing.R",
 		f"--tree {info.final_dated_tree_nwk} "
 		f"--meta {info.assemblies_file} "
-		f"--columns spatyper,Capsule.type,country "
-		f"--out {info.tree_figure}",
+		f"--columns {args.heatmap_vars} "
+		f"--out {info.tree_figure} "
+		f"--scriptdir {args.scriptdir}",
 		args=args,
 	)
 
@@ -806,7 +816,6 @@ def date_and_root(info, args):
 	root_tree(info, args)
 	date_tree(info, args)
 	choose_dated_tree(info, args)
-	draw_tree(info, args)
 
 
 def main():
@@ -820,7 +829,7 @@ def main():
 	st_list = read_st_file(args.st_file)
 	create_assembly_tables(st_list, args)
 	
-	st_info_list = [STInfo(st = st, assembly_dir = Path(args.assembly_dir), workdir = Path(args.workdir) / f"ST{st}") for st in st_list]
+	st_info_list = [STInfo(st = st, assembly_dir = args.assembly_dir, workdir = args.workdir) for st in st_list]
 	
 	#Snippy
 	if args.snippy:
@@ -838,7 +847,10 @@ def main():
 	if args.date_root:
 		msg("====Dating and rooting trees====")
 		run_parallel(st_info_list, date_and_root, max_workers=args.cpu, args=args)
-
+	
+	if args.draw:
+		msg("====Draw trees====")
+		run_parallel(st_info_list, draw_tree, args=args)
 
 
 if __name__ == "__main__":

@@ -2,13 +2,30 @@ r_container="/node8_R10/vasarhelyib/containers/stitam-prophyl-0.13.img"
 treeshrink_container="/node8_R10/vasarhelyib/containers/mesti90-treeshrink.1.3.9.sif"
 input_dir="tree_input"
 
+RUN_DATING=false
+RUN_DRAW=false
+
+for arg in "$@"; do
+	case "$arg" in
+		--dating)
+			RUN_DATING=true
+			;;
+		--draw)
+			RUN_DRAW=true
+			;;
+		*)
+			echo "Unknown option: $arg" >&2
+			exit 1
+			;;
+	esac
+done
+
 function singularity_run {
         singularity run -B /node8_R10,/node8_data,/node10_R10,/home,/scratch "$@"
 }
 
 export -f singularity_run
 
-set -x
 function process_st {
 	#st=ST97
 	local st=$1
@@ -94,30 +111,30 @@ function process_st {
 	singularity_run ${r_container}  Rscript ${prophyl_dir}/bin/choose_dated_tree.R --trees ${dated_trees_rds} --out_tree_rds ${final_dated_tree_rds} --out_tree_nwk ${final_dated_tree_nwk}
 }
 
-export -f process_st
 
 st_list="ST105 ST22 ST30 ST398 ST45 ST59 ST5 ST8 ST97 ST9"
 
-#for ST in ${st_list}; do
-#	process_st ${ST}
-#done
+set -x
+if $RUN_DATING; then
+	export -f process_st
+	for ST in ${st_list}; do
+		process_st "${ST}"
+	done
+fi
 
 
-for ST in ${st_list}; do
-	singularity_run ${r_container} Rscript tree_drawing.R \
-		--tree work/${ST}.final_dated_tree.nwk \
-		--meta tree_input/${ST}.tsv \
-		--columns spatyper,Capsule.type,country \
-		--out work/${ST}.tree.pdf
-done
 
 
-#TODO: add back duplicates; create figure
-
-#Rscript $projectDir/bin/add_duplicates.R \
-#    --project_dir $projectDir \
-#    --launch_dir $launchDir \
-#    --tree ${gubbinstree} \
-#    --duplicates $duplicates
+if $RUN_DRAW; then
+	SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	
+	for ST in ${st_list}; do
+		singularity_run ${r_container} Rscript "${SCRIPT_DIR}/tree_drawing.R" \
+			--tree "work/${ST}.final_dated_tree.nwk" \
+			--meta "tree_input/${ST}.tsv" \
+			--columns spatyper,Capsule.type,country,sccmec.type,PH4,PH12,PH18 \
+			--out "work/${ST}.tree.pdf"
+	done
+fi
 
 set +x

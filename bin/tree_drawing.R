@@ -8,11 +8,7 @@ library(tidyr)
 library(optparse)
 library(rlang)
 
-# Load external scripts
-script_dir <- "."
-source(file.path(script_dir, "custom_plot_tree_long.R"))
-source(file.path(script_dir, "get_colors.R"))
-source(file.path(script_dir, "read_df.R"))
+
 
 #' Parse collection_date column into full Date objects
 #'
@@ -119,12 +115,14 @@ if (interactive() || length(commandArgs(trailingOnly = TRUE)) > 0) {
 		make_option(c("-t", "--tree"), type = "character", help = "Path to Newick tree file", metavar = "FILE"),
 		make_option(c("-m", "--meta"), type = "character", help = "Path to metadata TSV file", metavar = "FILE"),
 		make_option(c("-o", "--out"), type = "character", default = "tree_with_heatmap.pdf", help = "Output PDF file [default: %default]", metavar = "FILE"),
-		make_option(c("-c", "--columns"), type = "character", help = "Comma-separated list of metadata column names to include", metavar = "col1,col2,...", default="H.type,O.type,country,Source,clb,fimH.N70S,fimH.S78N")
-	) # OR: "H.type,O.type,country,Source,Titer.E2COLE7,EOP.E2COLE7"
-
-
+		make_option(c("-c", "--columns"), type = "character", help = "Comma-separated list of metadata column names to include", metavar = "col1,col2,...", default="H.type,O.type,country,Source,clb,fimH.N70S,fimH.S78N"),
+		make_option("--scriptdir", type = "character", help = "Path to directory of scripts", default="/node10_R10/vasarhelyib/Staphylococcus_aureus/prophyl_pythonic/bin/")
+	)
 	args <- parse_args(OptionParser(option_list = option_list))
 	
+	source(file.path(args$scriptdir, "custom_plot_tree_long.R"))
+	source(file.path(args$scriptdir, "get_colors.R"))
+	source(file.path(args$scriptdir, "read_df.R"))
 	tree_file <- args$tree %||% "trees/prophyl_ST1193.final_tree.nwk"
 	heatmap_file <- args$meta %||% "input/ST1193.tsv"
 	output_file <- args$out
